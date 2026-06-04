@@ -1,0 +1,9 @@
+fastapi
+uvicorn
+ultralytics
+opencv-python-headless
+websockets
+numpy
+python-multipart
+groq
+python-dotenv

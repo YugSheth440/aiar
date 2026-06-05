@@ -27,7 +27,7 @@ detector = HazardDetector()
 def read_root():
     return {
         "status": "running",
-        "model": "Dual-Model Ensemble (best.pt + yolov8n.pt)",
+        "model": "Microsoft Florence-2-large",
         "classes": detector.names
     }
 

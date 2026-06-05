@@ -7,3 +7,9 @@ numpy
 python-multipart
 groq
 python-dotenv
+transformers==4.47.1
+timm
+einops
+torch
+torchvision
+pillow

@@ -3,37 +3,30 @@ import cv2
 import numpy as np
 import csv
 from datetime import datetime
-from ultralytics import YOLO
+import torch
+from PIL import Image
+import io
+from transformers import AutoProcessor, AutoModelForCausalLM
 
 class HazardDetector:
     def __init__(self):
-        # 1. Load Custom Hazard Model (best.pt)
-        custom_model_path = "best.pt"
-        self.is_custom_active = True
+        # Select GPU if available, else fallback to CPU
+        self.device = "cuda:0" if torch.cuda.is_available() else "cpu"
+        self.torch_dtype = torch.float16 if torch.cuda.is_available() else torch.float32
         
-        if not os.path.exists(custom_model_path):
-            print(f"[*] Custom model '{custom_model_path}' not found in backend directory.")
-            print("[*] Falling back to default 'yolov8n.pt' for custom model slot.")
-            custom_model_path = "yolov8n.pt"
-            self.is_custom_active = False
+        print(f"[*] Loading Florence-2 Model (microsoft/Florence-2-large) on {self.device}...")
         
-        print(f"[*] Loading Custom YOLO Model from: {custom_model_path}")
-        self.custom_model = YOLO(custom_model_path)
-        self.custom_names = self.custom_model.names
-        print(f"[*] Custom YOLO Model loaded. Classes: {self.custom_names}")
-
-        # 2. Load Standard Objects Model (yolov8n.pt)
-        standard_model_path = "yolov8n.pt"
-        print(f"[*] Loading Standard YOLO Model from: {standard_model_path}")
-        self.standard_model = YOLO(standard_model_path)
-        self.standard_names = self.standard_model.names
-        print(f"[*] Standard YOLO Model loaded. Classes: {len(self.standard_names)} items.")
+        # Load model and processor (trust_remote_code=True is required)
+        self.model = AutoModelForCausalLM.from_pretrained(
+            "microsoft/Florence-2-large", 
+            torch_dtype=self.torch_dtype, 
+            trust_remote_code=True
+        ).to(self.device)
+        self.processor = AutoProcessor.from_pretrained("microsoft/Florence-2-large", trust_remote_code=True)
+        print("[*] Florence-2 Model loaded successfully.")
         
-        # Combined active model labels
-        self.names = {**self.custom_names}
-        # Add standard names offset by 1000 to prevent label collisions
-        for cls_id, label in self.standard_names.items():
-            self.names[cls_id + 1000] = label
+        # Combined active model labels (we start empty or with dynamic keys)
+        self.names = {}
 
         # 3. Setup Telemetry CSV logging files and tables
         self.csv_log_file = "detections_log.csv"
@@ -126,51 +119,85 @@ class HazardDetector:
 
     def detect_image(self, img_bytes: bytes):
         """
-        Decodes raw image bytes, runs the dual-model inference pipeline,
+        Decodes raw image bytes, runs the Florence-2 object detection model,
         appends any active detections to detections_log.csv (with cooldown tracking), and returns results.
         """
-        np_arr = np.frombuffer(img_bytes, np.uint8)
-        img = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
-        if img is None:
+        try:
+            image = Image.open(io.BytesIO(img_bytes)).convert("RGB")
+            width, height = image.size
+        except Exception as e:
+            print(f"[!] Error decoding image: {e}")
             return []
 
-        detections = []
+        # 1. Run Object Detection
+        prompt = "<OD>"
+        inputs = self.processor(text=prompt, images=image, return_tensors="pt").to(self.device, self.torch_dtype)
 
-        # Part A: Run Custom Hazard Model (best.pt)
-        custom_results = self.custom_model(img, verbose=False)
-        for result in custom_results:
-            for box in result.boxes:
-                xyxy = box.xyxy.tolist()[0]
-                conf = float(box.conf[0])
-                cls = int(box.cls[0])
-                label = self.custom_names.get(cls, f"class_{cls}")
+        with torch.no_grad():
+            generated_ids = self.model.generate(
+                input_ids=inputs["input_ids"],
+                pixel_values=inputs["pixel_values"],
+                max_new_tokens=1024,
+                do_sample=False,
+                num_beams=3
+            )
+
+        generated_text = self.processor.batch_decode(generated_ids, skip_special_tokens=False)[0]
+        parsed_answer = self.processor.post_process_generation(
+            generated_text, 
+            task=prompt, 
+            image_size=(width, height)
+        )
+
+        # 2. Run Captioning
+        caption_prompt = "<MORE_DETAILED_CAPTION>"
+        caption_inputs = self.processor(text=caption_prompt, images=image, return_tensors="pt").to(self.device, self.torch_dtype)
+
+        with torch.no_grad():
+            caption_generated_ids = self.model.generate(
+                input_ids=caption_inputs["input_ids"],
+                pixel_values=caption_inputs["pixel_values"],
+                max_new_tokens=1024,
+                do_sample=False,
+                num_beams=3
+            )
+
+        caption_generated_text = self.processor.batch_decode(caption_generated_ids, skip_special_tokens=False)[0]
+        caption_parsed_answer = self.processor.post_process_generation(
+            caption_generated_text, 
+            task=caption_prompt, 
+            image_size=(width, height)
+        )
+
+        # Print Florence-2 live outputs to the terminal
+        print("\n" + "=" * 20 + " FLORENCE-2 LIVE OUTPUT " + "=" * 20)
+        print(f"[+] Caption: {caption_parsed_answer.get(caption_prompt, '')}")
+        print(f"[+] Detections: {parsed_answer.get(prompt, {})}")
+        print("=" * 64 + "\n")
+
+        detections = []
+        if prompt in parsed_answer:
+            results = parsed_answer[prompt]
+            bboxes = results.get("bboxes", [])
+            labels = results.get("labels", [])
+            
+            for cls_idx, (bbox, label) in enumerate(zip(bboxes, labels)):
+                # Ensure label is mapped in self.names
+                lbl_lower = label.lower().strip()
+                if lbl_lower not in self.names:
+                    # Give it a unique class ID
+                    self.names[2000 + len(self.names)] = lbl_lower
                 
+                cls_id = next(k for k, v in self.names.items() if v == lbl_lower)
+
                 detections.append({
-                    "bbox": [int(x) for x in xyxy],
-                    "confidence": round(conf, 4),
-                    "class": cls,
-                    "label": label,
-                    "source": "custom"
+                    "bbox": [int(coord) for coord in bbox],
+                    "confidence": 1.0,
+                    "class": cls_id,
+                    "label": lbl_lower,
+                    "source": "florence"
                 })
 
-        # Part B: Run Standard Objects Model (yolov8n.pt) if custom model is active
-        if self.is_custom_active:
-            standard_results = self.standard_model(img, verbose=False)
-            for result in standard_results:
-                for box in result.boxes:
-                    xyxy = box.xyxy.tolist()[0]
-                    conf = float(box.conf[0])
-                    cls = int(box.cls[0])
-                    label = self.standard_names.get(cls, f"class_{cls}")
-                    
-                    detections.append({
-                        "bbox": [int(x) for x in xyxy],
-                        "confidence": round(conf, 4),
-                        "class": cls + 1000,
-                        "label": label,
-                        "source": "standard"
-                    })
-        
         # 4. Write live detections to rolling CSV log file with presence tracking
         if len(detections) > 0:
             self.append_detections_to_csv(detections)

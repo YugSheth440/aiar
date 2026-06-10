@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Debug Console</title>
+    <style>
+        body { background: #222; color: #0f0; font-family: monospace; padding: 20px; }
+        textarea { width: 100%; height: 400px; background: #000; color: #0f0; padding: 10px; }
+        button { padding: 10px 20px; margin: 5px; background: #0f0; color: #000; cursor: pointer; }
+        .status { padding: 10px; margin: 10px 0; border: 1px solid #0f0; }
+        .success { background: #001100; }
+        .error { background: #110000; }
+    </style>
+</head>
+<body>
+    <h1>Florence-2 Groq Debug Console</h1>
+    
+    <div>
+        <button onclick="testHealth()">Test Backend Health</button>
+        <button onclick="testGroq()">Test Groq Integration</button>
+        <button onclick="testWebSocket()">Test WebSocket</button>
+        <button onclick="clearLog()">Clear Log</button>
+    </div>
+    
+    <textarea id="log"></textarea>
+    
+    <script>
+        const API = "http://localhost:8000";
+        
+        function log(msg) {
+            const textarea = document.getElementById('log');
+            textarea.value += `[${new Date().toLocaleTimeString()}] ${msg}\n`;
+            textarea.scrollTop = textarea.scrollHeight;
+            console.log(msg);
+        }
+        
+        async function testHealth() {
+            log("Testing backend health...");
+            try {
+                const res = await fetch(`${API}/`);
+                const data = await res.json();
+                log(`✓ Backend: ${JSON.stringify(data)}`);
+            } catch (e) {
+                log(`✗ Backend Error: ${e.message}`);
+            }
+        }
+        
+        async function testGroq() {
+            log("Testing Groq integration...");
+            try {
+                const res = await fetch(`${API}/test-groq`);
+                const data = await res.json();
+                log(`✓ Groq Result: ${JSON.stringify(data, null, 2)}`);
+            } catch (e) {
+                log(`✗ Groq Error: ${e.message}`);
+            }
+        }
+        
+        function testWebSocket() {
+            log("Testing WebSocket connection...");
+            const ws = new WebSocket("ws://localhost:8000/ws");
+            
+            ws.onopen = () => {
+                log("✓ WebSocket connected!");
+                ws.send("test");
+            };
+            
+            ws.onmessage = (e) => {
+                const data = JSON.parse(e.data);
+                log(`✓ WebSocket message: Frame ${data.frame}, Detections: ${data.count}, Analysis: ${data.analysis ? 'YES' : 'NO'}`);
+                ws.close();
+            };
+            
+            ws.onerror = (e) => {
+                log(`✗ WebSocket Error: ${e}`);
+            };
+            
+            ws.onclose = () => {
+                log("✓ WebSocket closed");
+            };
+        }
+        
+        function clearLog() {
+            document.getElementById('log').value = "";
+        }
+        
+        // Auto test on load
+        window.onload = () => {
+            log("Debug console ready! Click buttons to test.");
+            testHealth();
+        };
+    </script>
+</body>
+</html>

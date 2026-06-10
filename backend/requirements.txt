@@ -13,3 +13,5 @@ einops
 torch
 torchvision
 pillow
+sambanova
+mistralai

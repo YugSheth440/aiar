@@ -1,17 +1,16 @@
 import os
+import json
 import base64
+import csv
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
-from groq import Groq
 from detector import HazardDetector
 
-# Load environmental variables from .env file
 load_dotenv()
 
-app = FastAPI(title="Fire & Smoke Detection API")
+app = FastAPI(title="Pixtral-12B Detection API")
 
-# Allow CORS for React Native Web clients
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -20,34 +19,43 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Initialize detector
 detector = HazardDetector()
 
+def get_csv_labels(filepath):
+    """Load labels from CSV."""
+    labels = []
+    if os.path.exists(filepath):
+        try:
+            with open(filepath, mode='r', newline='', encoding='utf-8') as file:
+                reader = csv.DictReader(file)
+                for row in reader:
+                    lbl = row.get("label")
+                    if lbl:
+                        labels.append(lbl)
+        except Exception as e:
+            print(f"[!] Error reading {filepath}: {e}")
+    return labels
+
+# SambaNova analyzer removed. Pixtral-12B now performs direct analysis.
+
 @app.get("/")
-def read_root():
-    return {
-        "status": "running",
-        "model": "Microsoft Florence-2-large",
-        "classes": detector.names
-    }
+def health():
+    return {"status": "running", "model": "Pixtral-12B"}
 
 @app.post("/detect")
-async def detect_hazard(file: UploadFile = File(...)):
-    """
-    Standard HTTP POST endpoint for single-frame hazard detection.
-    """
+async def detect(file: UploadFile = File(...)):
+    """Single frame detection."""
     img_bytes = await file.read()
-    detections = detector.detect_image(img_bytes)
-    return {"detections": detections}
+    detections, caption = detector.detect_image(img_bytes)
+    return {"detections": detections, "caption": caption}
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
-    """
-    WebSocket endpoint for high-frequency, low-latency video frame streaming.
-    Decodes binary payloads or base64-encoded text payloads.
-    """
+    """Real-time WebSocket for video frames."""
     await websocket.accept()
-    print("[*] WebSocket client connected.")
+    print("[+] WebSocket client connected")
+    frame_count = 0
+    
     try:
         while True:
             message = await websocket.receive()
@@ -57,122 +65,107 @@ async def websocket_endpoint(websocket: WebSocket):
                 img_bytes = message["bytes"]
             elif "text" in message:
                 text_data = message["text"]
-                # Strip base64 prefix if present
                 if "," in text_data:
                     text_data = text_data.split(",")[1]
                 try:
                     img_bytes = base64.b64decode(text_data)
-                except Exception as e:
-                    await websocket.send_json({"error": "Invalid base64 encoding", "details": str(e)})
+                except:
                     continue
 
             if img_bytes:
-                detections = detector.detect_image(img_bytes)
-                await websocket.send_json({
-                    "detections": detections,
-                    "count": len(detections)
-                })
+                frame_count += 1
+                
+                # Detect and analyze with Pixtral
+                detections, caption, analysis_result = detector.detect_image(img_bytes)
+                
+                # Convert detections to array format expected by React frontend
+                detection_array = []
+                if isinstance(detections, list):
+                    detection_array = detections
+                elif isinstance(detections, dict) and "labels" in detections:
+                    labels = detections.get("labels", [])
+                    bboxes = detections.get("bboxes", [])
+                    detection_array = [
+                        {
+                            "label": label,
+                            "bbox": bbox,
+                            "confidence": 1.0,
+                            "class": i
+                        }
+                        for i, (label, bbox) in enumerate(zip(labels, bboxes))
+                    ]
+                
+                # Send as array of detections (React app format)
+                response = {
+                    "frame": frame_count,
+                    "detections": detection_array,
+                    "count": len(detection_array),
+                    "analysis": analysis_result
+                }
+                
+                await websocket.send_json(response)
                 
     except WebSocketDisconnect:
-        print("[*] WebSocket client disconnected.")
+        print(f"[*] WebSocket disconnected after {frame_count} frames")
     except Exception as e:
         print(f"[!] WebSocket error: {e}")
-        try:
-            await websocket.close()
-        except:
-            pass
 
-@app.get("/analyze")
-def analyze_safety():
-    """
-    Queries Groq's llama-3.3-70b-versatile model to analyze the current safety situation
-    based on active hazards and non-hazard detections.
-    """
-    # 1. Fetch active targets from detector state
-    hazards = list(detector.detected_hazards.keys())
-    non_hazards = list(detector.non_hazards.keys())
-    
-    # 2. Get API key from environment
-    api_key = os.environ.get("GROQ_API_KEY")
-    if not api_key:
-        return {
-            "status": "error",
-            "message": "GROQ_API_KEY environment variable is not configured on the server."
-        }
-        
+@app.post("/analyze-frame")
+async def analyze_frame(payload: dict):
+    """Analyze a single frame with detailed output."""
     try:
-        client = Groq(api_key=api_key)
-        
-        prompt = f"""
-You are an emergency response assistant.
-
-Hazards:
-{hazards}
-
-Available Objects:
-{non_hazards}
-
-Return the 3 MOST IMPORTANT actions the user should take RIGHT NOW.
-
-Requirements:
-- Exactly 3 actions.
-- Action-oriented sentences.
-- Maximum 10 words each.
-- Use available objects when helpful.
-- Return ONLY JSON.
-
-{{
-  "actions": [
-    "",
-    "",
-    ""
-  ]
-}}
-"""
-
-        response = client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
-            messages=[
-                {
-                    "role": "system",
-                    "content": "You are a safety expert."
-                },
-                {
-                    "role": "user",
-                    "content": prompt
-                }
-            ],
-            response_format={"type": "json_object"},
-            temperature=0.3
-        )
-        
-        import json
-        analysis_json = json.loads(response.choices[0].message.content)
         return {
             "status": "success",
-            "hazards": hazards,
-            "non_hazards": non_hazards,
-            "actions": analysis_json.get("actions", [])
+            "analysis": detector.latest_analysis,
+            "labels": payload.get("labels", [])
         }
     except Exception as e:
-        return {
-            "status": "error",
-            "message": str(e)
-        }
+        return {"status": "error", "message": str(e)}
+
+@app.get("/test-groq")
+def test_groq():
+    """Test Pixtral analysis with demo data."""
+    return {
+        "status": "success", 
+        "result": detector.latest_analysis,
+        "test_labels": ["person", "fire", "smoke", "door"],
+        "test_caption": "Testing Pixtral-12B active telemetry"
+    }
 
 @app.post("/reset")
 def reset_detections():
-    """
-    Clears all database logs and active in-memory cached detections.
-    """
+    """Clear all detections."""
     try:
-        detector.reset_all()
+        if hasattr(detector, 'reset_all'):
+            detector.reset_all()
         return {
             "status": "success",
-            "message": "Database logs and detector caches reset successfully."
+            "message": "Detector reset successfully"
         }
     except Exception as e:
-        return {
-            "status": "error",
-            "message": str(e)
-        }
+        return {"status": "error", "message": str(e)}
+
+@app.get("/analyze")
+def analyze_safety():
+    """Analyze current safety situation using Pixtral."""
+    print("\n[*] /analyze endpoint called")
+    
+    labels = [d.get("label", "") for d in detector.latest_detections]
+    
+    # Categorize them dynamically based on predefined hazard labels
+    hazards = [lbl for lbl in labels if lbl.lower().strip() in detector.predefined_hazard_labels]
+    non_hazards = [lbl for lbl in labels if lbl.lower().strip() not in detector.predefined_hazard_labels]
+    
+    analysis_result = detector.latest_analysis
+    
+    return {
+        "status": "success",
+        "hazards": hazards,
+        "non_hazards": non_hazards,
+        "analysis": analysis_result,
+        "actions": analysis_result.get("actions", [])
+    }
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000, reload=False)

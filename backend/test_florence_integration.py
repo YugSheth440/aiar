@@ -16,8 +16,9 @@ def run_test():
     img_bytes = img_encoded.tobytes()
     
     print("[*] Running detection...")
-    detections = detector.detect_image(img_bytes)
+    detections, caption = detector.detect_image(img_bytes)
     print(f"[+] Detections result: {detections}")
+    print(f"[+] Caption result: {caption}")
     print(f"[+] Active categories in detector: {detector.names}")
     print("[*] Test complete.")
 

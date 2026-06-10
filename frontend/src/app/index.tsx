@@ -69,6 +69,7 @@ export default function HomeScreen() {
   const lastFrameTimeRef = useRef<number>(0);
   const frameCountRef = useRef<number>(0);
   const fpsTimerRef = useRef<any>(null);
+  const isWaitingForFrameResponseRef = useRef<boolean>(false);
 
   // Auto-fill network IP for development
   useEffect(() => {
@@ -156,6 +157,7 @@ export default function HomeScreen() {
       socketRef.current = socket;
 
       socket.onopen = () => {
+        isWaitingForFrameResponseRef.current = false;
         setIsConnected(true);
         setIsConnecting(false);
         addLog('success', 'Telemetry connection established successfully.');
@@ -185,6 +187,7 @@ export default function HomeScreen() {
       };
 
       socket.onmessage = (event) => {
+        isWaitingForFrameResponseRef.current = false;
         try {
           const data = JSON.parse(event.data);
           
@@ -216,17 +219,25 @@ export default function HomeScreen() {
               }
             }
           }
+          
+          // Handle Groq analysis from WebSocket
+          if (data.analysis && data.analysis.actions) {
+            setActions(data.analysis.actions || []);
+            addLog('info', `Safety Analysis: Threat Level ${data.analysis.threat_level?.toUpperCase() || 'UNKNOWN'} - Priority ${data.analysis.priority?.toUpperCase() || 'UNKNOWN'}`);
+          }
         } catch (err) {
           console.error("Error decoding websocket frame payload:", err);
         }
       };
 
       socket.onerror = (err) => {
+        isWaitingForFrameResponseRef.current = false;
         console.error("Telemetry link error:", err);
         addLog('error', 'Telemetry link connection failure occurred.');
       };
 
       socket.onclose = () => {
+        isWaitingForFrameResponseRef.current = false;
         setIsConnected(false);
         setIsConnecting(false);
         setDetections([]);
@@ -241,6 +252,7 @@ export default function HomeScreen() {
   };
 
   const disconnectBackend = () => {
+    isWaitingForFrameResponseRef.current = false;
     if (socketRef.current) {
       socketRef.current.close();
       socketRef.current = null;
@@ -259,7 +271,11 @@ export default function HomeScreen() {
 
   // Feed Frame Framebuffer Streamer callback
   const handleFrameCaptured = (base64Frame: string) => {
+    if (isWaitingForFrameResponseRef.current) {
+      return; // Skip frame if we are still waiting for backend response
+    }
     if (socketRef.current && socketRef.current.readyState === WebSocket.OPEN) {
+      isWaitingForFrameResponseRef.current = true;
       // Send raw base64 frame directly to WebSocket
       socketRef.current.send(base64Frame);
     }
@@ -349,7 +365,7 @@ export default function HomeScreen() {
               <CameraBridge 
                 active={isCameraActive && isConnected} 
                 onFrame={handleFrameCaptured} 
-                frameIntervalMs={200} // Fetch browser camera frame every 200ms
+                frameIntervalMs={3000} // Fetch browser camera frame every 3000ms
               />
 
               {/* Glowing Dynamic SVG Bounding Box and 3D Hologram Overlay */}
@@ -442,7 +458,7 @@ export default function HomeScreen() {
 
                 {/* Available Objects */}
                 <View style={[styles.badgeSection, { borderLeftWidth: 1, borderLeftColor: 'rgba(255,255,255,0.06)', paddingLeft: 16 }]}>
-                  <Text style={styles.badgeSectionTitle}>ENVIRONMENT CONTEXT</Text>
+                  <Text style={styles.badgeSectionTitle}>ENVIRONMENT OBJECTS</Text>
                   <View style={styles.badgeList}>
                     {nonHazards.length === 0 ? (
                       <Text style={styles.emptyBadgeText}>None detected</Text>
@@ -917,8 +933,8 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   badgeSectionTitle: {
-    color: '#4E5164',
-    fontSize: 8,
+    color: '#94A3B8',
+    fontSize: 11,
     fontWeight: 'bold',
     letterSpacing: 1,
   },
@@ -955,8 +971,8 @@ const styles = StyleSheet.create({
     fontWeight: 'bold',
   },
   emptyBadgeText: {
-    color: '#4E5164',
-    fontSize: 10,
+    color: '#64748B',
+    fontSize: 12,
     fontStyle: 'italic',
   },
   actionsContainer: {
@@ -969,16 +985,16 @@ const styles = StyleSheet.create({
     letterSpacing: 1,
   },
   noActionsBox: {
-    backgroundColor: 'rgba(255, 255, 255, 0.01)',
+    backgroundColor: '#1E293B',
     borderRadius: 8,
     padding: 12,
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.02)',
+    borderWidth: 1.5,
+    borderColor: 'rgba(255,255,255,0.1)',
     alignItems: 'center',
   },
   noActionsText: {
-    color: '#4E5164',
-    fontSize: 11,
+    color: '#94A3B8',
+    fontSize: 13,
     textAlign: 'center',
   },
   actionsList: {
@@ -987,11 +1003,11 @@ const styles = StyleSheet.create({
   actionItem: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: 'rgba(255, 255, 255, 0.03)',
+    backgroundColor: '#1E293B',
     borderRadius: 8,
-    padding: 10,
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.04)',
+    padding: 12,
+    borderWidth: 1.5,
+    borderColor: 'rgba(255, 255, 255, 0.15)',
     gap: 10,
   },
   actionNumberBox: {
@@ -1011,7 +1027,7 @@ const styles = StyleSheet.create({
   },
   actionText: {
     color: '#FFF',
-    fontSize: 12,
+    fontSize: 14,
     fontWeight: '600',
     flex: 1,
   },

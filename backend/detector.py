@@ -142,6 +142,7 @@ class HazardDetector:
                         
                         detections.append({
                             "bbox": [x_min, y_min, x_max, y_max],
+                            "normalized_bbox": [xmin, ymin, xmax, ymax],
                             "confidence": 1.0,
                             "label": label,
                             "source": "pixtral"
@@ -182,6 +183,7 @@ class HazardDetector:
             
             detections.append({
                 "bbox": [x_min, y_min, x_max, y_max],
+                "normalized_bbox": [xmin_val, ymin_val, xmax_val, ymax_val],
                 "confidence": 1.0,
                 "label": label if label else "object",
                 "source": "pixtral"

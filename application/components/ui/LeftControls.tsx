@@ -4,6 +4,7 @@ import {
   StyleSheet,
   Pressable,
   Dimensions,
+  Platform,
 } from 'react-native';
 import Animated, {
   useSharedValue,
@@ -29,6 +30,8 @@ import {
 import { useWorkflowStore } from '../../store/workflowStore';
 import { MOCK_HAZARDS } from '../../src/mockData';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { BACKEND_URL } from '../../src/config';
+import type { Hazard } from '../../src/types';
 
 // ── Premium iOS-style glass button ─────────────────────────────
 function GlassBtn({
@@ -95,6 +98,8 @@ function ScanBtn() {
     workflowState,
     startAnalysis,
     onHazardsDiscovered,
+    cameraRef,
+    reset,
   } = useWorkflowStore();
 
   const isAnalyzing = workflowState === 'ANALYZING';
@@ -153,13 +158,155 @@ function ScanBtn() {
     btnScale.value = withSequence(withTiming(0.88, { duration: 90 }), withSpring(1, { damping: 10 }));
     await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
 
-    // ✅ SINGLE TAP — always start analysis immediately
-    // (resets + scans in one action via startAnalysis which clears all state)
     startAnalysis();
-    setTimeout(async () => {
+
+    try {
+      let base64Image = '';
+      let photoUri = '';
+      
+      if (cameraRef) {
+        // Capture frame from the mobile camera
+        const photo = await cameraRef.takePictureAsync({
+          base64: true,
+          quality: 0.5,
+          skipProcessing: true,
+        });
+        base64Image = photo.base64 || '';
+        photoUri = photo.uri || '';
+      }
+
+      if (!cameraRef) {
+        // Fallback: If no camera (e.g. running on web simulator), fallback to Mock Hazards
+        console.warn('Camera reference is not registered (Web/Sim). Using MOCK_HAZARDS fallback.');
+        setTimeout(async () => {
+          await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
+          onHazardsDiscovered(MOCK_HAZARDS);
+        }, 3000);
+        return;
+      }
+
+      // Create FormData
+      const formData = new FormData();
+      if (Platform.OS === 'web') {
+        if (!base64Image) {
+          throw new Error('No base64 image captured on web');
+        }
+        const byteCharacters = atob(base64Image);
+        const byteNumbers = new Array(byteCharacters.length);
+        for (let i = 0; i < byteCharacters.length; i++) {
+          byteNumbers[i] = byteCharacters.charCodeAt(i);
+        }
+        const byteArray = new Uint8Array(byteNumbers);
+        const blob = new Blob([byteArray], { type: 'image/jpeg' });
+        formData.append('file', blob, 'photo.jpg');
+      } else {
+        if (photoUri) {
+          formData.append('file', {
+            uri: photoUri,
+            name: 'photo.jpg',
+            type: 'image/jpeg',
+          } as any);
+        } else if (base64Image) {
+          const byteCharacters = atob(base64Image);
+          const byteNumbers = new Array(byteCharacters.length);
+          for (let i = 0; i < byteCharacters.length; i++) {
+            byteNumbers[i] = byteCharacters.charCodeAt(i);
+          }
+          const byteArray = new Uint8Array(byteNumbers);
+          const blob = new Blob([byteArray], { type: 'image/jpeg' });
+          formData.append('file', blob, 'photo.jpg');
+        } else {
+          throw new Error('Failed to capture image');
+        }
+      }
+
+      // Call FastAPI /detect endpoint
+      const response = await fetch(`${BACKEND_URL}/detect`, {
+        method: 'POST',
+        body: formData,
+      });
+
+      if (!response.ok) {
+        throw new Error(`Server returned status: ${response.status}`);
+      }
+
+      const data = await response.json();
+      const detections = data.detections || [];
+      const caption = data.caption || '';
+      const analysis = data.analysis || { actions: [], priority: 'low', threat_level: 'safe' };
+
+      // Map detections/analysis to Hazard[]
+      const mappedHazards: Hazard[] = detections.map((det: any, index: number) => {
+        const label = det.label || 'object';
+        const confidence = Math.round((det.confidence || 1.0) * 100);
+        const normBbox = det.normalized_bbox || [0.1, 0.1, 0.9, 0.9]; // [xmin, ymin, xmax, ymax]
+        
+        // Map bbox to percentages for AROverlay
+        const left = `${(normBbox[0] * 100).toFixed(1)}%`;
+        const top = `${(normBbox[1] * 100).toFixed(1)}%`;
+        const width = `${((normBbox[2] - normBbox[0]) * 100).toFixed(1)}%`;
+        const height = `${((normBbox[3] - normBbox[1]) * 100).toFixed(1)}%`;
+
+        // Map threat level
+        let riskLevel: 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL' = 'LOW';
+        const level = (analysis.threat_level || 'safe').toLowerCase();
+        if (level === 'critical') riskLevel = 'CRITICAL';
+        else if (level === 'warning') riskLevel = 'HIGH';
+        else if (level === 'safe') riskLevel = 'LOW';
+        else riskLevel = 'MEDIUM';
+
+        // Map actions to ActionStep[]
+        const actionSteps = (analysis.actions || []).map((actStr: string, actIdx: number) => ({
+          id: `act-${index}-${actIdx}`,
+          stepNumber: actIdx + 1,
+          icon: actIdx === 0 ? 'shield-alert' : actIdx === 1 ? 'zap-off' : 'search',
+          title: actStr,
+          subtitle: actIdx === 0 ? 'Urgent precaution' : 'Safety action',
+          isCritical: actIdx === 0 && (riskLevel === 'CRITICAL' || riskLevel === 'HIGH'),
+          estimatedTime: actIdx === 0 ? '~30 sec' : '~2 min',
+        }));
+
+        // Simulated sensor reading (temp in °F) for visual UI
+        let reading = '72.5';
+        if (label === 'fire') reading = '185.2';
+        else if (label === 'smoke') reading = '110.4';
+        else if (label === 'overheating' || label === 'panel') reading = '98.9';
+
+        return {
+          id: `hz-${Date.now()}-${index}`,
+          title: `${label.charAt(0).toUpperCase() + label.slice(1)} Detected`,
+          subtitle: caption ? caption.slice(0, 50) + '...' : `Threat: ${analysis.threat_level || 'low'}`,
+          riskLevel,
+          confidence,
+          component: label.charAt(0).toUpperCase() + label.slice(1),
+          reading,
+          readingUnit: '°F',
+          description: caption || `A ${label} was detected in the environment.`,
+          reason: `Pixtral identified ${label} at coordinate boundary.`,
+          whyItMatters: caption || `The detected ${label} poses a potential safety risk.`,
+          tags: [label.toUpperCase(), (analysis.priority || 'low').toUpperCase()],
+          boundingBox: { top, left, width, height },
+          actions: actionSteps.length > 0 ? actionSteps : [
+            {
+              id: `act-fallback-${index}`,
+              stepNumber: 1,
+              icon: 'shield-alert',
+              title: 'Exercise caution',
+              subtitle: 'Avoid close proximity',
+              isCritical: false,
+            }
+          ],
+        };
+      });
+
       await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
-      onHazardsDiscovered(MOCK_HAZARDS);
-    }, 3000);
+      onHazardsDiscovered(mappedHazards);
+
+    } catch (error) {
+      console.error('Scan and detection pipeline failed:', error);
+      await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+      reset();
+    }
   };
 
   return (

@@ -6,7 +6,13 @@ import { useWorkflowStore } from '../../store/workflowStore';
 export function CameraView() {
   const [permission, requestPermission] = useCameraPermissions();
   const [isReady, setIsReady] = useState(false);
-  const { facing, torchEnabled } = useWorkflowStore();
+  const { facing, torchEnabled, setCameraRef, cameraRef } = useWorkflowStore();
+
+  useEffect(() => {
+    return () => {
+      setCameraRef(null);
+    };
+  }, [setCameraRef]);
 
   useEffect(() => {
     if (!permission?.granted) {
@@ -34,6 +40,11 @@ export function CameraView() {
 
   return (
     <ExpoCameraView
+      ref={(ref) => {
+        if (ref !== cameraRef) {
+          setCameraRef(ref);
+        }
+      }}
       style={StyleSheet.absoluteFill}
       facing={facing}
       // enableTorch keeps the flashlight on continuously as a torch

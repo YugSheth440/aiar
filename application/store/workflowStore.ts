@@ -17,6 +17,7 @@ interface WorkflowStore {
   completedStepIds: Set<string>;
 
   // Camera
+  cameraRef: any | null;
   facing: FacingMode;
   torchEnabled: boolean;    // real torch toggle (keepTorchOn)
   isLandscape: boolean;
@@ -25,6 +26,7 @@ interface WorkflowStore {
   sheetSnapIndex: number;
 
   // Actions
+  setCameraRef: (ref: any | null) => void;
   startAnalysis: () => void;
   onHazardsDiscovered: (hazards: Hazard[]) => void;
   focusHazard: (hazard: Hazard) => void;
@@ -42,10 +44,13 @@ export const useWorkflowStore = create<WorkflowStore>((set, get) => ({
   detectedHazards: [],
   selectedHazard: null,
   completedStepIds: new Set(),
+  cameraRef: null,
   facing: 'back',
   torchEnabled: false,
   isLandscape: false,
   sheetSnapIndex: -1,
+
+  setCameraRef: (cameraRef) => set({ cameraRef }),
 
   // ── Always starts immediately on ONE tap regardless of current state ──
   startAnalysis: () =>

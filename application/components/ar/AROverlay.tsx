@@ -227,15 +227,6 @@ function HazardBox({
         />
       </Svg>
 
-      {/* Temperature badge at top of box */}
-      <TempBadge
-        x={tempX}
-        y={tempY}
-        reading={hazard.reading}
-        unit={hazard.readingUnit}
-        risk={hazard.riskLevel}
-      />
-
       {/* Object label below box */}
       <ObjectLabel
         x={labelX}

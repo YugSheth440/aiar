@@ -46,8 +46,8 @@ def health():
 async def detect(file: UploadFile = File(...)):
     """Single frame detection."""
     img_bytes = await file.read()
-    detections, caption = detector.detect_image(img_bytes)
-    return {"detections": detections, "caption": caption}
+    detections, caption, analysis = detector.detect_image(img_bytes)
+    return {"detections": detections, "caption": caption, "analysis": analysis}
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
